@@ -1,0 +1,621 @@
+%REM
+	Library webLib
+	Created Aug 22, 2022 by Henrik Winkel/OpusNeo
+	Description: Comments for Library
+%END REM
+Option Public
+Option Declare
+
+
+
+%REM
+	Class WebSession
+	Description: Comments for Class
+%END REM
+Class WebSession 
+	
+	Public queryString As String
+	Public requestContent As String
+	Public contentType As String
+	Public pathInfo As String
+	Public webError As WebError
+	Public webDoc As NotesDocument
+	Public json As String
+	Public jsonNav As NotesJSONNavigator
+	Public level As Integer
+	Public firstElement(20) As Boolean
+				
+	Sub New(queryStringTest As String, requestContentTest As String, contentTypeTest As String)
+	
+		
+		Dim session As New NotesSession
+		Dim index As integer
+				
+		set me.webDoc = session.Documentcontext 
+	
+		If Not (me.webDoc Is Nothing) then
+		
+		me.pathInfo = me.webDoc.Path_Info_Decoded(0)
+		
+		If queryStringTest<>"" Then
+			me.queryString = queryStringTest
+		Else
+			me.queryString = webDoc.query_string(0)
+		End If
+		
+		If requestContentTest<>"" Then
+			me.requestContent = requestContentTest
+			me.contentType = contentTypeTest
+		Else
+			If me.webDoc.Hasitem("Request_Content_000") Then
+				me.requestContent = ""
+				index = 0
+				Do While me.webDoc.Hasitem("Request_Content_"+Right$("00"+CStr(index),3))
+					me.requestContent = me.requestContent + me.webDoc.GetItemValue("Request_Content_"+Right$("00"+CStr(index),3))(0)
+					index = index + 1
+				Loop
+			Else
+				me.requestContent = me.webDoc.Request_Content(0)
+			End If
+			me.contentType = me.webDoc.content_type(0)
+			
+				If me.contentType = "application/x-www-form-urlencoded" Or InStr(me.contentType, "json") > 0 Then
+				me.requestContent = unescapeUTF8(me.requestContent)	
+			End If
+							
+		End If
+							
+		If me.contentType = "application/x-www-form-urlencoded" Or InStr(me.contentType, "json") > 0 Then					
+			Set jsonNav = session.CreateJSONNavigator(me.requestContent)
+		End If
+	
+		End if
+				
+		me.json = ""
+		
+		me.level = 0
+		me.firstElement(0) = true
+		
+		Set webError = New WebError(Me.webDoc)
+				
+	End Sub
+	
+	%REM
+		Function queryParam
+		Description: Comments for Function
+	%END REM
+	Function queryParam(paramName As String, returnType As String, defaultValueVar As Variant) As Variant
+		
+		' returnType: "array", "boolean", "string", "integer"
+		' defaultValue should always be same datatype as returnType
+		
+		Dim isMandatory As Boolean
+		
+		If IsObject(defaultValueVar) Then
+			isMandatory = True
+		Else
+			isMandatory = false
+		End If
+		
+		
+		On Error GoTo ErrorHandler
+		
+		Dim query_arr As Variant
+		Dim r_arr As Variant
+		Dim q As Integer
+		Dim valueStr As String
+  		
+  		query_arr = Split(me.queryString, "&")
+
+  		For q = LBound(query_arr) To UBound(query_arr)
+    		r_arr = Split ( query_arr(q) , "=")  
+	   		If r_arr(0) = paramName Then
+      			valueStr = r_arr(1)  
+      			Exit For
+    		End if
+		Next
+		
+		If valueStr = "" Then
+			If isMandatory Then
+				
+				webError.errorType = "/error/missing-url-parameter-value"
+				webError.errorTitle = "Url parameter value missing"
+				webError.errorStatus = 400
+				webError.errorDetail = "Missing value for " + paramName
+				
+				Error 10001
+				
+			Else
+				queryParam = CStr(defaultValueVar)
+			End If
+		else	
+	
+		
+		Select Case returnType
+		
+		Case "array": 
+			queryParam = Split(valueStr, ",")
+		
+		Case "boolean": 
+			Select Case LCase(valueStr)
+				Case "true"
+					queryParam = True
+				Case "false"
+					queryParam = False
+				Case Else
+					' return error		
+			End Select	
+		
+				
+	Case "integer": 
+	
+		If IsNumeric(valueStr) Then
+			queryParam = CInt(valueStr)
+		Else
+			' return error
+		End If
+	
+	Case "long": 
+	
+		If IsNumeric(valueStr) Then
+			queryParam = CLng(valueStr)
+		Else
+			' return error
+		End If
+	
+	Case "string"	
+				
+		queryParam = valueStr
+		
+	Case Else
+		
+		' return error	
+		
+		
+	End Select
+		End If	
+	
+	Exit function
+	
+ErrorHandler:
+	
+	' return error
+		Error "webLib.queryParam: " & Error$ & ", " & CStr(Erl)
+		Exit function
+		
+	End Function
+	
+	
+	Sub appendJSON(element As String, value As Variant, valueType As String)
+						
+		Dim tmpValue As String				
+						
+		If Not me.firstElement(me.level) Then
+			me.json = me.json + ","
+		End If
+		me.firstElement(me.level) = False
+		
+		Select Case valueType
+			
+			Case "boolean"
+				Select Case LCase(CStr(value)) 
+				Case "true","1"
+					me.json = me.json + |"| + element + |":true| 
+				Case "false","0"
+					me.json = me.json + |"| + element + |":false|
+				Case Else
+					me.json = me.json + |"| + element + |":""|
+			End Select	
+				
+			Case "date"
+				If value <> "" Then
+					me.json = me.json +|"| + element + |":"|+Format$(value, "yyyy-mm-dd")+|"|
+				Else	
+					me.json = me.json +|"| + element + |":""|
+				End If	
+				
+			Case "datetime"
+				If value <> "" Then
+					me.json = me.json +|"| + element + |":"|+Format$(value, "yyyy-mm-ddThh:nn:ss")+|"| 
+				Else	
+					me.json = me.json +|"| + element + |":""|
+				End If
+				
+				
+			Case "number"
+				If CStr(value)="" Then
+					me.json = me.json + (|"| + element + |":null|)
+				Else
+					tmpValue = Replace(CStr(value),",",".")
+					If Left$(tmpValue,1) = "." Then
+						tmpValue = "0" + tmpValue
+					End If
+					me.json = me.json + |"| + element + |":| + tmpValue
+				End If
+				
+			Case "string"
+				me.json = me.json + |"| + element + |":| + json_textValue(value)
+					
+			Case "stringArray"	
+				me.json = me.json + |"| + element + |":| + json_arrayStringValues(value)
+				
+			Case "stringArray"	
+				me.json = me.json +  |"| + element + |":| + json_arrayStringValues(value)
+				
+			Case "usernamecommon" 
+				If InStr(value, "CN") > 0 Then
+					Dim userNameObj As New NotesName(value)				
+					me.json = me.json + |"| + element + |":"|+ usernameObj.Common +|"|
+				Else
+					me.json = me.json + |"| + element + |":|+ json_textValue(value)
+				End If
+				
+				
+				
+				
+			Case ""
+				me.json = me.json + |"| + element + |":| + value
+				
+				
+			Case Else
+				Error 1001	
+				
+			
+		End Select
+		
+		 
+		
+	End Sub
+	
+		
+	Sub startJSONArray(element As String)
+		If Not me.firstElement(me.level) Then
+			me.json = me.json + ","
+		End If
+		me.firstElement(me.level) = False
+		
+		If element<>"" Then
+			me.json = me.json +  |"| + element + |":|
+		End If
+		
+		me.json = me.json + "["
+		
+		me.level = me.level + 1
+		me.firstElement(me.level) = True
+		
+	End Sub
+		
+	Sub endJSONArray()	
+		me.json = me.json + "]"
+		me.level = me.level - 1
+	End Sub
+	
+	Sub startJSONObject(element As String)
+		If Not me.firstElement(me.level) Then
+			me.json = me.json + ","
+		End If
+		me.firstElement(me.level) = False
+		
+		If element<>"" Then
+			me.json = me.json +  |"| + element + |":|
+		End If
+		
+		
+		me.json = me.json + "{"
+		
+		me.level = me.level + 1
+		me.firstElement(me.level) = True
+	End Sub
+		
+	Sub endJSONObject()
+		me.json = me.json + "}"
+		me.level = me.level - 1
+	End Sub
+		
+		
+	Sub printJSON()
+		Print {Content-type: text/x-json; charset=UTF-8}
+		Print me.json
+	End Sub
+	
+	%REM
+		Sub clearJSON
+		Description: Comments for Sub
+	%END REM
+	Sub clearJSON()
+		me.json = ""
+		me.level = 0
+		me.firstElement(0) = True
+	End Sub
+		
+	
+End Class
+Class WebError
+	
+	Public errorType As String
+	Public errorTitle As String
+	Public errorStatus As Integer
+	Public errorDetail As String
+	Public errorInstance As String
+	
+	Public webDoc As NotesDocument
+	
+		
+	Sub New(webDoc As NotesDocument)
+		Set me.webDoc = webDoc
+	End Sub
+
+	Function getJson As String
+	
+		Dim s As String
+	
+		s = |"type":"| + me.errorType + |",|
+		s = s + |"title":"| + me.errorTitle + |",|
+		s = s + |"status":| + CStr(me.errorStatus) + |,|
+		s = s + |"detail":"| + me.errorDetail + |",|
+		s = s + |"instance":"| + me.webDoc.Path_Info_Decoded(0) + |"|
+	
+		getJson = |{| + s + |}| 
+	
+	End Function
+	
+	
+	Sub printJSON
+		If me.errorType="" Then
+			me.errorType = "/error/internal-error"
+			me.errorTitle = "Internal error"
+			me.errorStatus = 500
+			me.errorDetail = Error$ + ", line: " + CStr(Erl)
+		End If
+				
+		Print {Content-type: text/x-json; charset=UTF-8}
+		Print {Status: } + CStr(me.errorStatus)
+		Print me.getJson()
+	End Sub
+	
+End Class
+%REM
+	Function formatDate
+	Description: Comments for Function
+%END REM
+Function formatDate(ds As String) As String
+	
+	If ds <> "" Then
+		formatDate = Format$(ds, "yyyy-mm-dd")
+	else	
+		formatDate = ""
+	End If
+	
+End Function
+Function json_textValue(ByVal value As Variant) As String
+		
+	Dim text As String
+	
+	text = CStr(value)
+	
+	text = Replace(Text, {\}, {\\})	
+	text = Replace(Text, {"}, {\"})
+	
+	text = Replace(Text, Chr$(10), {\n})
+	text = Replace(Text, Chr$(13), {\r})
+	
+	text = Replace(Text, Chr$(8), {\b})
+	text = Replace(Text, Chr$(9), {\t})
+	text = Replace(Text, Chr$(12), {\f})
+	
+	text = {"} & Text & {"}
+	
+	json_textValue = Text
+		
+End Function
+
+
+
+
+
+
+Function json_arrayStringValues(values As Variant) As String
+	On Error GoTo errorHandler
+	
+	Dim s As String
+		
+	'init
+	s = ""
+		
+	If IsArray(values)  Then
+		
+		'loop all values
+		ForAll v In values
+			
+			If s<>"" Then
+				s = s + |,|
+			End If
+			
+			s = s + json_textValue(v)
+		
+		End ForAll
+		
+	End If
+	
+	'if no values added, add values
+	If s = "" Then
+		s = s + json_textValue(values)
+	End If
+	
+	s = "[" + s  + |]|
+	
+	json_arrayStringValues = s
+	Exit Function
+	
+errorHandler:
+	json_arrayStringValues = "[]"
+	Exit Function
+	
+End Function
+%REM
+	Function getJSONValueByPointer
+	Description: Comments for Function
+%END REM
+Function getJSONValueByPointer(jsonNav As NotesJSONNavigator, pointer As String)
+	
+	On Error GoTo Errorhandler
+	
+	Dim jsonElm As NotesJSONElement
+	
+	Set jsonElm = jsonNav.GetElementByPointer(pointer)
+	
+	getJSONValueByPointer = jsonElm.Value
+	
+	Exit function
+		
+	
+errorHandler:
+	
+	getJSONValueByPointer = ""
+		
+End Function
+%REM
+	Function formatFileSize
+	Description: Comments for Function
+%END REM
+Function formatFileSize(fileSize As Long) As String
+	
+	Dim kb As Double
+	Dim mb As Double
+	
+	kb = fileSize / 1024
+	
+	
+	If kb < 1024 Then
+		
+		formatFileSize = Format$(Round(kb, 0), "#,#") + " kB"
+		
+	Else
+		
+		mb = filesize / 1048576	
+		
+		formatFileSize = Format$(Round(mb, 0), "#,#") + " MB"
+		
+	End If
+	
+End Function
+
+
+
+
+Function getDateVar(dateString As String) As Variant
+	
+	Dim dateVar As Variant
+			
+	If dateString="" Then
+		dateVar = ""
+	Else
+		If InStr(dateString,"T") Then
+			dateVar = CDat(Mid$(dateString,9,2)+"-"+Mid$(dateString,6,2)+"-"+Left$(dateString,4)) + 1
+		Else
+			dateVar = CDat(dateString)
+		End If
+	End If
+	
+	getDateVar = dateVar
+	
+End Function
+Function unescapeUTF8(s As String) As String
+
+	On Error GoTo errorHandler
+	
+	Dim result As String
+	Dim b As Long, c As Long
+	Dim i As Integer
+	Dim sumb As Long
+	
+	For i = 1 To Len(s)
+		c = Uni(Mid$(s, i, 1))		
+		Select Case c
+		Case Uni("%"):
+			b = CInt("&H"+Mid$(s, i+1,2))
+			i = i + 2
+			'Case Uni("+")
+			'	b = Uni(" ")
+		Case Else
+			b = c
+	End Select
+		
+		' Decode byte b as UTF-8, sumb collects incomplete chars
+		If (b And &Hc0) = &H80 Then				' 10xxxxxx (continuation byte)
+			sumb = (sumb*64) Or (b And &H3f)		' Add to 6 bits to sumb
+		Else												' Start of new sequence
+			If (sumb<>0) Then	
+			' Not on 1st cycle
+				If(sumb =< 65553) Then result = result & UChr(sumb)			' Add previous char to sbuf
+			End If				
+			If (b And &H80) = 0 Then				' 0xxxxxxx (yields 7 bits)
+				sumb = b								' Store in sbuf
+			Else											' 110xxxxx or 1110xxxx
+				sumb = b And &H1f					' (yields 5 or 4 bits)
+			End If
+		End If	
+	Next
+	If (sumb<>0) Then
+		If(sumb =< 65553) Then result = result & UChr(sumb)
+	End If				
+	
+	unescapeUTF8 = result
+	
+	
+		Exit Function
+ErrorHandler:
+	
+	MessageBox "webLib.unescapeUTF8" & Error$ & ", " & CStr(Erl) & " failed with bytes " & sumb
+	
+	Error "webLib.unescapeUTF8" & Error$ & ", " & CStr(Erl) & " failed with bytes " & sumb
+	Exit Function
+	
+End Function
+
+
+Function escapeUTF8(s As String) As String
+	
+	Dim result As String
+	Dim i As Integer
+	Dim c As Long
+	
+	For i = 1 To Len(s)
+		c = Uni(Mid$(s, i, 1))		
+		If (c>=Uni("A") And c<=Uni("Z")) Or (c>=Uni("a") And c<=Uni("z")) Or (c>=Uni("0") And c<=Uni("9"))  Then
+			'If c=Uni(" ")	Then
+			'	result = result + "+"
+			'Else
+			result = result + UChr(c)
+			'End If
+		Else
+			If c <= &H007f Then												' other ASCII
+				result = result + "%" + Hex$(c)				
+			Else
+				If c <= &H07FF Then											' non-ASCII <= 0x7FF
+					result = result + "%" + Hex$(&Hc0 Or (c\64))				
+					result = result + "%" + Hex$(&H80 Or (c And &h3F))				
+				Else
+					result = result + "%" + Hex$(&Hc0 Or (c\4096))		' 0x7FF < ch <= 0xFFFF
+					result = result + "%" + Hex$(&H80 Or ((c\64) And &H3F))				
+					result = result + "%" + Hex$(&H80 Or (c And &H3F))				
+				End If
+			End If
+		End If			
+	Next
+	
+	escapeUTF8 = result
+	
+End Function
+
+
+
+
+
+
+
+
+
+
+
+
